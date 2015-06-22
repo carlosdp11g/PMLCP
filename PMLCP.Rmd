@@ -1,0 +1,139 @@
+---
+title: "Machine learning algorithm to predict activity quality from activity monitors"
+author: "Carlos Ponce"
+date: "17 de junio de 2015"
+output: html_document
+---
+
+## Executive summary
+
+
+## Introduction
+Data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants is used in this report. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information about the dataset is available [in this link](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+## Getting the data
+The datasets are downloaded by the links provided by the instructors, and then they're loaded into R.
+```{r}
+setwd("~/Coursera/Semana 3")
+
+## download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "train.csv")
+## download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "test.csv")
+
+training <- read.csv("train.csv")
+testing <- read.csv("test.csv")
+```
+
+To predict the manner in which the people did the exercise, the **classe** variable from the training set is used. From the documentation found in the hyperlink provided by the instructors,  
+it represents the way the participants performed the unilateral dumbbell biceps curl. 
+
+1. A - Exactly according to specification
+2. B - Throwing the elbows to the front
+3. C - Lifting the dumbbell only halfway
+4. D - Lowering the dumbbell only halfway
+5. E - Throwing the hips to the front
+
+The first classe corresponds to the right execution of the exercise, the other four point at common mistakes.
+
+## Data cleaning
+```{r, results='markup', echo=FALSE}
+str(training)
+```
+
+The str() function made visible some variables that have many NA values. These may not be worth considering in the model building process, so the columns that have more than 17000 NAs (around 85% of the observations) are discarded from the dataset. There are numeric variables recognized as factors, and some of those factors have very few levels, such as *kurtosis_yaw_belt*; practically it has no data. Factors as this one are also deleted in the tidy dataset, considering not useful to have any factor with 5 or less levels.
+
+Also, variables such as the timestamp, the username, or X are not useful for the model, so they are also removed.
+
+```{r}
+## Getting the names of all the factor variables with less than 6 levels, but not 0.
+niveles <- sapply(training, nlevels)
+poorfactors <- names(niveles[which(niveles %in% 1:5)])
+poorfactors <- poorfactors[-11] ## Getting classe out of the vector
+## Getting the names of all the variables that have more than 85% values as NAs.
+deleted <- colnames(training)[colSums(is.na(training)) > 17000]
+
+slimtraining <- training[, -which(names(training) %in% c(poorfactors, deleted, c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")))]
+
+## Preparing 'classe' for the conversion of data to numeric with lapply().
+classe <- slimtraining[, 77]
+slimtraining <- slimtraining[,-77]
+
+slimtraining <- as.data.frame(lapply(slimtraining, as.numeric))
+rm(training) ## To free space in the disk
+```
+
+This code processed the original *training* dataset and cleared all the variables that are not useful for the model. This new dataset has 76 variables, 84 less than the original.
+
+Now, to reduce even more the number of variables, the correlation and the variance are calculated. When a variable has a variance very close to 0, then it's not useful, as it doesn't change at all. When two variables have a correlation very close to either -1 or 1, then it's valid to delete one of them.
+
+```{r, results = 'markup'}
+## Variance
+variances <- sapply(slimtraining, var)
+summary(variances)
+```
+
+By the summary of the variances obtained, all the columns with a variance lower than **10** will be deleted. Then, the correlation analysis is made.
+```{r}
+discardvar <- names(slimtraining[, which(variances < 10)])
+
+## Correlation
+correlations <- cor(slimtraining)
+discardcor <- unname(which(abs(correlations) > 0.9 & correlations != 1, arr.ind = TRUE))
+rn <- rownames(correlations)[discardcor[,1]]
+cn <- colnames(correlations)[discardcor[,2]]
+
+discardcor <- unique(rn)
+```
+
+The row names and column names represent the variables that have high correlation and, therefore, will also be deleted. Both have 24 values, but there are actually only 15 variables, and both vectors have the same values, only in different order.
+
+In this code, the slimtraining dataset is cleaned up by deleting the columns that match with those that showed low variance or high correlation.
+
+```{r}
+slimtraining <- slimtraining[, -which(colnames(slimtraining) %in% c(discardvar, discardcor))]
+```
+
+The dataset has been reduced considerably in size. The fewer variables make it possible to train a model that can predict the quality of the exercise. Now, the classe variable is joined into the dataset.
+
+```{r}
+slimtraining <- cbind(slimtraining, classe)
+```
+
+
+## Making the model
+
+To do the model, the caret and randomForest library is used, and the random forest method is use for the training, with a slight modification in trainControl, where the cross validation method is selected, and it's reduced to a 4-fold sampling.
+
+```{r, results = TRUE}
+library(caret)
+library(randomForest)
+
+modglm <- train(classe ~ ., 
+               data=slimtraining,
+               method="rf",
+               trControl=trainControl(method="cv", number=4),
+               verbose=FALSE)
+```
+
+After this, we test the model with the testing dataset:
+
+```{r}
+slimtesting <- testing[, which(colnames(testing) %in% colnames(slimtraining))]
+slimtesting <- as.data.frame(lapply(slimtesting, as.numeric))
+slimtesting[is.na(slimtesting)] <- 1 ## To remove the NAs from testing.
+predicciones <- predict(modglm, newdata = slimtesting)
+```
+
+The predictions for the testing dataset are:
+`r predicciones`
+
+```{r}
+trainpred <- predict(modglm, newdata = slimtraining)
+accuracy <- sum(trainpred == slimtraining$classe) / length(trainpred)
+```
+
+The accuracy of the model with the training data is `r accuracy`. This means that the in-sample error is practically zero. However, this doesn't necessarily mean that the out of sample error will be the same. It's probable that due to making the model with all the dataset, there has been some overfitting. But by the amount of data that was used for the training (only 19622 observations), this may not occur.
+
+Source:
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+[Read more](http://groupware.les.inf.puc-rio.br/har#ixzz3dR1ZmdsV)
